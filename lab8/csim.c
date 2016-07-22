@@ -1,0 +1,215 @@
+#include "cachelab.h"
+#include <getopt.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <malloc.h>
+#include <string.h>
+
+#define MAXLENGTH 200
+#define SYSTEMBIT 64
+/*name:Zhang Lei
+ *loginID:5140219237
+ */
+
+int hit=0,miss=0,eviction=0;
+int s=0,E=0,b=0;
+int detailinfo=0;
+void* cache;
+
+void printhelp(){
+    printf("\
+Usage: ./csim [-hv] -s <num> -E <num> -b <num> -t <tracefile>\n\
+Options:\n\
+-h               Print this help message.\n\
+-v               Optional detailinfobose flag.\n\
+-s <num>         Number of set indexbits.\n\
+-E <num>         Number of lines perset.\n\
+-b <num>         Number of block offset bits.\n\
+-t <tracefile>   trace file.\n\
+\n\
+Examples:\n\
+linux> ./csim -s 4 -E 1 -b 4 -t traces/yi.trace\n\
+linux> ./csim -v -s 8 -E 2 -b 4 -t traces/yi.trace\n");
+}
+
+void getarg(int argc,char* argv[], char* tracefile){
+    int opt;
+    
+    while ((opt = getopt(argc,argv,"hvs:E:b:t:"))!=-1) {
+        switch (opt) {
+            case 'h':
+                printhelp();
+                exit(0);            
+            case 'v':
+                detailinfo=1;
+                break;
+            case 's':
+                s = atoi(optarg);
+                break;
+            case 'E':
+                E = atoi(optarg);
+                break;
+            case 'b':
+                b = atoi(optarg);
+                break;
+            case 't':
+                strcpy(tracefile,optarg);
+                break;
+            case '?':
+                printhelp();
+                exit(-1);
+            default:
+                break;
+        }
+    }
+
+}
+
+void initcache(int s, int E, int b){
+    int S=1<<s, B=1<<b;
+    int blocksize = B+10;
+    cache = malloc(blocksize * E * S);
+    memset(cache, 0 , blocksize * E * S);
+}
+
+void* findset(int s, int E, int b, unsigned long address) {
+        int B=1<<b;
+	int blocksize = B + 10;
+	int index = (address << (SYSTEMBIT - s - b)) >> (SYSTEMBIT - s);
+	void* set = cache + blocksize * E * index;
+	for (int i = 0; i < E ; i++) {
+	    if (((char*)set)[0] == 0) {
+		set += blocksize;
+		continue;
+            }
+	    ((unsigned char*)set)[1] += 1;
+	    set += blocksize;
+	}
+	set = cache + blocksize * E * index;
+	for (int i = 0; i<E; i++) {
+	    if (((char*)set)[0] == 0) {
+		set += blocksize;
+		continue;
+	    }
+	    long cachetag = ((long*)(set + 2))[0];
+	    if (address >> (s + b) == cachetag) {
+		((unsigned char*)set)[1] = 1;
+		return set;
+	    }
+	    set += blocksize;
+	}
+	return NULL;
+}
+
+int missset(int s, int E, int b, unsigned long address) {
+        int B=1<<b;
+	int blocksize = B + 10;
+	int index = (address << (SYSTEMBIT - s - b)) >> (SYSTEMBIT - s);
+	void* set = cache + blocksize * E * index;
+	int max = 0, freq = 0;
+	for (int i = 0; i<E; i++) {
+	    if (((char*)set)[0] == 0) {
+		((char*)set)[0] = 1;
+		((char*)set)[1] = 1;
+		((long*)(set + 2))[0] = address >> (s + b);
+		return 1;
+	    }
+	    if (((char*)set)[1] > max) {
+		max = ((char*)set)[1];
+		freq = i;
+	    }
+	    set += blocksize;
+	}
+	set = cache + blocksize * (E * index + freq);
+	((char*)set)[0] = 1;
+	((char*)set)[1] = 1;
+	((long*)(set + 2))[0] = address >> (s + b);
+	return 0;
+}
+
+
+void execute(FILE *file){
+    char op;
+    unsigned long address;
+    int readsize;
+    void* get;
+    while (fscanf(file,"%c%lx,%d",&op,&address,&readsize)!=EOF){
+        if(op=='I'){
+            continue;
+        }
+        if(op=='L'){
+            printf("L %lx,%d ",address,readsize);
+            if((get = findset(s,E,b,address))!=NULL){
+            	hit++;
+                if(detailinfo) printf("hit\n");
+            }
+            else if(missset(s,E,b,address)==0){
+                miss++;
+               	eviction++;
+                if(detailinfo) printf("miss eviction\n");
+            }
+            else{
+                miss++;
+  	        if(detailinfo) printf("miss\n");	
+ 	    }
+        }
+        if(op=='S'){
+	    printf("S %lx,%d",address,readsize);
+            if((get=findset(s,E,b,address))!=NULL){
+		hit++;
+                if(detailinfo) printf("hit\n");
+	    }
+            else if(missset(s,E,b,address)==0){
+                miss++;
+               	eviction++;
+                if(detailinfo) printf("miss eviction\n");
+            }
+            else{
+                miss++;
+  	        if(detailinfo) printf("miss\n");	
+ 	    }
+	}
+        if(op=='M'){
+	    printf("M %lx,%d",address,readsize);
+            if((get=findset(s,E,b,address))!=NULL){
+		hit+=2;
+                if(detailinfo) printf("hit hit\n");
+	    }
+            else if(missset(s,E,b,address)==0){
+                miss++;
+                hit++;
+               	eviction++;
+                if(detailinfo) printf("miss eviction hit\n");
+            }
+            else{
+                miss++;
+                hit++;
+  		if(detailinfo) printf("miss\n");
+            } 
+        }
+    }
+    fclose(file);
+}
+
+int main(int argc, char* argv[])
+{
+    char tracefile[MAXLENGTH];
+    FILE *file;
+    getarg(argc, argv, tracefile);
+    if(s==0||E==0||b==0||tracefile==NULL){
+        printf("Missing required command line argument\n");
+        printhelp();
+        return -1;
+    }
+    file = fopen(tracefile, "r");
+    if(!file){
+        printf("%s: No such file!\n", tracefile);
+        return -1;
+    }
+    initcache(s,E,b);
+    execute(file);
+    printSummary(hit, miss, eviction);
+    free(cache);
+    return 0;
+}
